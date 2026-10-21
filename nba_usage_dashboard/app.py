@@ -116,7 +116,14 @@ def athlete_rows(group):
             ftm, fta = split_shots(pick("FT", "freeThrows"))
             min_value = minutes(pick("MIN", "minutes"))
             status = entry.get("reason") or ("DNP" if entry.get("didNotPlay") else "")
+            # ESPN marks starting lineup members with starter=true on the athlete entry.
+            # Do not guess from minutes or row order if ESPN omits this field.
+            starter_value = entry.get("starter", entry.get("starting"))
+            if starter_value is None:
+                starter_value = athlete.get("starter", athlete.get("starting"))
+            is_starter = starter_value is True or str(starter_value).lower() == "true"
             rows.append({
+                "Starter": "★" if is_starter else "",
                 "Player": athlete.get("displayName") or athlete.get("fullName") or "Unknown",
                 "MIN": round(min_value, 1), "PTS": int(number(pick("PTS", "points"))),
                 "FGM": fgm, "FGA": fga, "3PM": tpm, "3PA": tpa,
@@ -163,7 +170,7 @@ def game_label(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3 · Free ESPN data · Estimated USG% · No API key required")
+st.caption("Version 3.1 · Free ESPN data · Starters highlighted · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -205,9 +212,26 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         if df.empty:
             st.info(f"No player stats available for {name}.")
             continue
+        starters_found = int((df["Starter"] == "★").sum())
+        if starters_found == 5:
+            st.caption("★ = starting lineup · Starter rows are highlighted in light yellow and displayed first.")
+        else:
+            st.caption(f"★ = ESPN-confirmed starter. ESPN marked {starters_found} of 5 starters for this team; unmarked players are not inferred.")
         sort = st.selectbox("Sort by", ["MIN", "PTS", "USG% (Est.)", "REB", "AST", "Player"], key=f"sort_{i}")
-        df = df.sort_values(sort, ascending=(sort == "Player"), na_position="last")
-        st.dataframe(df, use_container_width=True, hide_index=True, column_config={
+        # Keep ESPN-confirmed starters at the top on initial load and when changing sort options.
+        df = df.assign(_starter_first=df["Starter"].eq("★"))
+        df = df.sort_values(
+            ["_starter_first", sort],
+            ascending=[False, sort == "Player"],
+            na_position="last",
+            kind="stable",
+        ).drop(columns="_starter_first")
+        def highlight_starters(row):
+            shade = "background-color: #fff1b8; color: #262626;" if row["Starter"] == "★" else ""
+            return [shade] * len(row)
+
+        styled_df = df.style.apply(highlight_starters, axis=1)
+        st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
             "USG% (Est.)": st.column_config.NumberColumn("USG% (Est.)", format="%.1f%%")
         })
         st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
