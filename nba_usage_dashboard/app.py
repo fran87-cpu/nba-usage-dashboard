@@ -175,17 +175,11 @@ def team_table(group):
     df = pd.DataFrame(athlete_rows(group))
     if df.empty:
         return df
-    # Shooting percentages. eFG% (adjusted FG%) credits made threes with
-    # an extra half basket. Undefined rates (zero attempts) remain blank.
+    # Field-goal percentage only; undefined when the player attempted no shots.
     df["FG%"] = shooting_percentage(df["FGM"], df["FGA"])
-    df["eFG%"] = shooting_percentage(df["FGM"] + 0.5 * df["3PM"], df["FGA"])
-    df["3P%"] = shooting_percentage(df["3PM"], df["3PA"])
-    df["FT%"] = shooting_percentage(df["FTM"], df["FTA"])
-    # Place shooting percentages beside their corresponding shooting totals.
     cols = list(df.columns)
-    for pct_col, after_col in (("FG%", "FGA"), ("eFG%", "FG%"), ("3P%", "3PA"), ("FT%", "FTA")):
-        cols.remove(pct_col)
-        cols.insert(cols.index(after_col) + 1, pct_col)
+    cols.remove("FG%")
+    cols.insert(cols.index("FGA") + 1, "FG%")
     df = df[cols]
     # Sum player statistics to calculate team totals. This avoids mismatched
     # ESPN team-stat label formats and works for completed regulation/OT games.
@@ -282,14 +276,11 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         styled_df = df.style.apply(highlight_starters, axis=1)
         st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
             "USG% (Est.)": st.column_config.NumberColumn("USG% (Est.)", format="%.1f%%"),
-            "FG%": st.column_config.NumberColumn("FG%", format="%.1f%%"),
-            "eFG%": st.column_config.NumberColumn("eFG%", format="%.1f%%"),
-            "3P%": st.column_config.NumberColumn("3P%", format="%.1f%%"),
-            "FT%": st.column_config.NumberColumn("FT%", format="%.1f%%")
+            "FG%": st.column_config.NumberColumn("FG%", format="%.1f%%")
         })
         st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
-st.caption("**Shooting percentages:** FG% = FGM/FGA; eFG% (adjusted field-goal %) = (FGM + 0.5 × 3PM)/FGA; 3P% = 3PM/3PA; FT% = FTM/FTA. All are multiplied by 100. A blank percentage means the player had zero attempts.")
+st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
