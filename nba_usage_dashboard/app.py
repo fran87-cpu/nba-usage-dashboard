@@ -166,10 +166,27 @@ def athlete_rows(group):
     return rows
 
 
+def shooting_percentage(made, attempts):
+    """Return a percentage, or NA when no attempts were recorded."""
+    return (100.0 * made / attempts.where(attempts.ne(0), float("nan"))).round(1)
+
+
 def team_table(group):
     df = pd.DataFrame(athlete_rows(group))
     if df.empty:
         return df
+    # Shooting percentages. eFG% (adjusted FG%) credits made threes with
+    # an extra half basket. Undefined rates (zero attempts) remain blank.
+    df["FG%"] = shooting_percentage(df["FGM"], df["FGA"])
+    df["eFG%"] = shooting_percentage(df["FGM"] + 0.5 * df["3PM"], df["FGA"])
+    df["3P%"] = shooting_percentage(df["3PM"], df["3PA"])
+    df["FT%"] = shooting_percentage(df["FTM"], df["FTA"])
+    # Place shooting percentages beside their corresponding shooting totals.
+    cols = list(df.columns)
+    for pct_col, after_col in (("FG%", "FGA"), ("eFG%", "FG%"), ("3P%", "3PA"), ("FT%", "FTA")):
+        cols.remove(pct_col)
+        cols.insert(cols.index(after_col) + 1, pct_col)
+    df = df[cols]
     # Sum player statistics to calculate team totals. This avoids mismatched
     # ESPN team-stat label formats and works for completed regulation/OT games.
     team_minutes = df["_minutes_numeric"].sum()
@@ -195,7 +212,7 @@ def game_label(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3.3 · Free ESPN data · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 3.4 · Free ESPN data · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -264,10 +281,15 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
 
         styled_df = df.style.apply(highlight_starters, axis=1)
         st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
-            "USG% (Est.)": st.column_config.NumberColumn("USG% (Est.)", format="%.1f%%")
+            "USG% (Est.)": st.column_config.NumberColumn("USG% (Est.)", format="%.1f%%"),
+            "FG%": st.column_config.NumberColumn("FG%", format="%.1f%%"),
+            "eFG%": st.column_config.NumberColumn("eFG%", format="%.1f%%"),
+            "3P%": st.column_config.NumberColumn("3P%", format="%.1f%%"),
+            "FT%": st.column_config.NumberColumn("FT%", format="%.1f%%")
         })
         st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
+st.caption("**Shooting percentages:** FG% = FGM/FGA; eFG% (adjusted field-goal %) = (FGM + 0.5 × 3PM)/FGA; 3P% = 3PM/3PA; FT% = FTM/FTA. All are multiplied by 100. A blank percentage means the player had zero attempts.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
