@@ -1,6 +1,7 @@
 """Free ESPN NBA box scores with estimated usage rate. No API key needed."""
 from datetime import date
 import re
+from html import escape
 
 import pandas as pd
 import requests
@@ -132,7 +133,32 @@ def player_position(athlete, entry):
     return None
 
 
-def athlete_rows(group):
+@st.cache_data(ttl=86400, show_spinner=False)
+def roster_positions(team_id, season):
+    """Look up detailed ESPN positions from the team's season-specific roster."""
+    if not team_id:
+        return {}
+    try:
+        payload = get_json(f"{BASE}/teams/{team_id}/roster", {"season": season})
+    except (requests.RequestException, ValueError):
+        return {}
+    positions = {}
+    groups = payload.get("athletes") or []
+    for group in groups:
+        entries = group.get("items", []) if isinstance(group, dict) else []
+        if isinstance(group, dict) and group.get("id"):
+            entries = [group]
+        for athlete in entries:
+            if not isinstance(athlete, dict):
+                continue
+            role = player_position(athlete, {})
+            if role and athlete.get("id") is not None:
+                positions[str(athlete["id"])] = role
+    return positions
+
+
+def athlete_rows(group, roster=None):
+    roster = roster or {}
     """ESPN statistics contain parallel labels/names and per-athlete stats arrays."""
     rows = []
     for section in group.get("statistics", []):
@@ -165,7 +191,7 @@ def athlete_rows(group):
                 starter_value = athlete.get("starter", athlete.get("starting"))
             is_starter = starter_value is True or str(starter_value).lower() == "true"
             player_name = athlete.get("displayName") or athlete.get("fullName") or "Unknown"
-            position = player_position(athlete, entry)
+            position = player_position(athlete, entry) or roster.get(str(athlete.get("id", "")))
             if position:
                 player_name = f"{player_name} ({position})"
             rows.append({
@@ -192,8 +218,8 @@ def shooting_percentage(made, attempts):
     return (100.0 * made / attempts.where(attempts.ne(0), float("nan"))).round(1)
 
 
-def team_table(group):
-    df = pd.DataFrame(athlete_rows(group))
+def team_table(group, roster=None):
+    df = pd.DataFrame(athlete_rows(group, roster))
     if df.empty:
         return df
     # Field-goal percentage only; undefined when the player attempted no shots.
@@ -227,7 +253,7 @@ def game_label(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3.6 · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 3.8 · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -265,7 +291,11 @@ tabs = st.tabs([(g.get("team") or {}).get("displayName", f"Team {i+1}") for i, g
 for i, (tab, group) in enumerate(zip(tabs, team_groups)):
     with tab:
         name = (group.get("team") or {}).get("displayName", f"Team {i+1}")
-        df = team_table(group)
+        team_id = (group.get("team") or {}).get("id")
+        # NBA season uses the year of the spring playoffs (e.g. Oct 2025 -> 2026).
+        season = selected_date.year + (1 if selected_date.month >= 10 else 0)
+        roster = roster_positions(str(team_id), season) if team_id else {}
+        df = team_table(group, roster)
         if df.empty:
             st.info(f"No player stats available for {name}.")
             continue
@@ -290,19 +320,49 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
             na_position="last",
             kind="stable",
         ).drop(columns=["_starter_first", "_sort_minutes"], errors="ignore")
-        def highlight_starters(row):
-            shade = "background-color: #fff1b8; color: #262626;" if row["Starter"] == "★" else ""
-            return [shade] * len(row)
+        # Streamlit's dataframe grid cannot apply a smaller font to only part of a
+        # cell. Render a safe, scrollable HTML table so the ESPN position can be
+        # visually secondary while retaining starter highlighting and Sort by.
+        def display_cell(column, value):
+            if pd.isna(value):
+                return "—"
+            if column == "Player":
+                name, sep, role = str(value).rpartition(" (")
+                if sep and role.endswith(")") and re.fullmatch(r"[A-Za-z]{1,4}", role[:-1]):
+                    return f'{escape(name)} <span class="nba-role">({escape(role[:-1])})</span>'
+            if column in ("FG%", "USG% (Est.)"):
+                return f"{float(value):.1f}%"
+            return escape(str(value))
 
-        styled_df = df.style.apply(highlight_starters, axis=1)
-        st.dataframe(styled_df, use_container_width=True, hide_index=True, column_config={
-            "USG% (Est.)": st.column_config.NumberColumn("USG% (Est.)", format="%.1f%%"),
-            "FG%": st.column_config.NumberColumn("FG%", format="%.1f%%")
-        })
+        headers = "".join(f"<th>{escape(str(c))}</th>" for c in df.columns)
+        body_rows = []
+        for _, player_row in df.iterrows():
+            css_class = ' class="nba-starter"' if player_row["Starter"] == "★" else ""
+            cells = "".join(
+                f'<td class="{"nba-player" if col == "Player" else ""}">{display_cell(col, player_row[col])}</td>'
+                for col in df.columns
+            )
+            body_rows.append(f"<tr{css_class}>{cells}</tr>")
+        table_html = f"""
+        <style>
+          .nba-scroll {{ overflow-x: auto; max-width: 100%; }}
+          .nba-box {{ border-collapse: collapse; width: 100%; font-size: 0.88rem; white-space: nowrap; }}
+          .nba-box th, .nba-box td {{ padding: 8px 10px; border-bottom: 1px solid #ddd; text-align: right; }}
+          .nba-box th {{ background: #f1f3f5; color: #252525; font-weight: 650; }}
+          .nba-box th:nth-child(2), .nba-box td:nth-child(2) {{ text-align: left; }}
+          .nba-box td {{ color: inherit; }}
+          .nba-box .nba-starter td {{ background: #fff1b8; color: #262626; }}
+          .nba-box .nba-role {{ font-size: 0.78em; opacity: 0.75; font-weight: 400; }}
+          .nba-box .nba-player {{ font-weight: 550; }}
+        </style>
+        <div class="nba-scroll"><table class="nba-box"><thead><tr>{headers}</tr></thead>
+        <tbody>{''.join(body_rows)}</tbody></table></div>
+        """
+        st.html(table_html)
         st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
-st.caption("Player positions (PG, SG, SF, PF, C) are shown beside names when provided by ESPN; missing positions are not inferred.")
+st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
