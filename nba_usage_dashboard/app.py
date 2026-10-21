@@ -115,6 +115,23 @@ def normalize_key(value):
     return re.sub(r"[^A-Z0-9]", "", str(value).upper())
 
 
+def player_position(athlete, entry):
+    """Read ESPN's own position abbreviation without inferring a role."""
+    for source in (athlete, entry):
+        position = source.get("position")
+        if isinstance(position, dict):
+            abbreviation = position.get("abbreviation") or position.get("shortName")
+        elif isinstance(position, str):
+            abbreviation = position
+        else:
+            abbreviation = None
+        if abbreviation:
+            abbreviation = str(abbreviation).strip().upper()
+            if abbreviation in {"PG", "SG", "SF", "PF", "C"}:
+                return abbreviation
+    return None
+
+
 def athlete_rows(group):
     """ESPN statistics contain parallel labels/names and per-athlete stats arrays."""
     rows = []
@@ -147,9 +164,13 @@ def athlete_rows(group):
             if starter_value is None:
                 starter_value = athlete.get("starter", athlete.get("starting"))
             is_starter = starter_value is True or str(starter_value).lower() == "true"
+            player_name = athlete.get("displayName") or athlete.get("fullName") or "Unknown"
+            position = player_position(athlete, entry)
+            if position:
+                player_name = f"{player_name} ({position})"
             rows.append({
                 "Starter": "★" if is_starter else "",
-                "Player": athlete.get("displayName") or athlete.get("fullName") or "Unknown",
+                "Player": player_name,
                 "MIN": minutes_display(raw_minutes), "_minutes_numeric": min_value, "PTS": int(number(pick("PTS", "points"))),
                 "FGM": fgm, "FGA": fga, "3PM": tpm, "3PA": tpa,
                 "FTM": ftm, "FTA": fta,
@@ -206,7 +227,7 @@ def game_label(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3.4 · Free ESPN data · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 3.6 · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -281,6 +302,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
+st.caption("Player positions (PG, SG, SF, PF, C) are shown beside names when provided by ESPN; missing positions are not inferred.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
+
