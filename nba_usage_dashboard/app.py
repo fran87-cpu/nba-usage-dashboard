@@ -79,6 +79,31 @@ def minutes(value):
     return number(value)
 
 
+def minutes_display(value):
+    """Show the time ESPN provides as MM:SS; do not invent sub-minute precision."""
+    if value is None or str(value).strip() in ("", "--", "DNP"):
+        return "—"
+    raw = str(value).strip()
+    if ":" in raw:
+        parts = raw.split(":")
+        if len(parts) == 2:
+            try:
+                mins, secs = int(parts[0]), int(parts[1])
+                if mins >= 0 and 0 <= secs < 60:
+                    return f"{mins:02d}:{secs:02d}"
+            except ValueError:
+                pass
+        return raw
+    try:
+        total_seconds = round(float(raw) * 60)
+        if total_seconds < 0:
+            return "—"
+        mins, secs = divmod(total_seconds, 60)
+        return f"{mins:02d}:{secs:02d}"
+    except ValueError:
+        return "—"
+
+
 def split_shots(value):
     if isinstance(value, str) and "-" in value:
         a, b = value.split("-", 1)
@@ -114,8 +139,8 @@ def athlete_rows(group):
             fgm, fga = split_shots(pick("FG", "fieldGoals"))
             tpm, tpa = split_shots(pick("3PT", "3P", "threePointFieldGoals"))
             ftm, fta = split_shots(pick("FT", "freeThrows"))
-            min_value = minutes(pick("MIN", "minutes"))
-            status = entry.get("reason") or ("DNP" if entry.get("didNotPlay") else "")
+            raw_minutes = pick("MIN", "minutes")
+            min_value = minutes(raw_minutes)
             # ESPN marks starting lineup members with starter=true on the athlete entry.
             # Do not guess from minutes or row order if ESPN omits this field.
             starter_value = entry.get("starter", entry.get("starting"))
@@ -125,7 +150,7 @@ def athlete_rows(group):
             rows.append({
                 "Starter": "★" if is_starter else "",
                 "Player": athlete.get("displayName") or athlete.get("fullName") or "Unknown",
-                "MIN": round(min_value, 1), "PTS": int(number(pick("PTS", "points"))),
+                "MIN": minutes_display(raw_minutes), "_minutes_numeric": min_value, "PTS": int(number(pick("PTS", "points"))),
                 "FGM": fgm, "FGA": fga, "3PM": tpm, "3PA": tpa,
                 "FTM": ftm, "FTA": fta,
                 "OREB": int(number(pick("OREB", "offensiveRebounds"))),
@@ -136,7 +161,7 @@ def athlete_rows(group):
                 "BLK": int(number(pick("BLK", "blocks"))),
                 "TOV": int(number(pick("TO", "TOV", "turnovers"))),
                 "PF": int(number(pick("PF", "personalFouls", "fouls"))),
-                "+/-": pick("+/-", "plusMinus"), "Status": status,
+                "+/-": pick("+/-", "plusMinus"),
             })
     return rows
 
@@ -147,15 +172,15 @@ def team_table(group):
         return df
     # Sum player statistics to calculate team totals. This avoids mismatched
     # ESPN team-stat label formats and works for completed regulation/OT games.
-    team_minutes = df["MIN"].sum()
+    team_minutes = df["_minutes_numeric"].sum()
     team_actions = df["FGA"].sum() + 0.44 * df["FTA"].sum() + df["TOV"].sum()
     individual_actions = df["FGA"] + 0.44 * df["FTA"] + df["TOV"]
     if team_minutes > 0 and team_actions > 0:
-        usage = 100 * individual_actions * (team_minutes / 5) / (df["MIN"].replace(0, float("nan")) * team_actions)
+        usage = 100 * individual_actions * (team_minutes / 5) / (df["_minutes_numeric"].replace(0, float("nan")) * team_actions)
         df["USG% (Est.)"] = usage.round(1)
     else:
         df["USG% (Est.)"] = float("nan")
-    return df
+    return df.drop(columns="_minutes_numeric")
 
 
 def game_label(event):
@@ -170,7 +195,7 @@ def game_label(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3.1 · Free ESPN data · Starters highlighted · Estimated USG% · No API key required")
+st.caption("Version 3.3 · Free ESPN data · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -220,12 +245,19 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         sort = st.selectbox("Sort by", ["MIN", "PTS", "USG% (Est.)", "REB", "AST", "Player"], key=f"sort_{i}")
         # Keep ESPN-confirmed starters at the top on initial load and when changing sort options.
         df = df.assign(_starter_first=df["Starter"].eq("★"))
+        # MM:SS sorts lexicographically for varying minute widths; convert to seconds.
+        # Keep the human-readable MIN column untouched in the display and CSV.
+        if sort == "MIN":
+            df["_sort_minutes"] = df["MIN"].map(
+                lambda v: minutes(v) if v != "—" else float("nan")
+            )
+        sort_column = "_sort_minutes" if sort == "MIN" else sort
         df = df.sort_values(
-            ["_starter_first", sort],
+            ["_starter_first", sort_column],
             ascending=[False, sort == "Player"],
             na_position="last",
             kind="stable",
-        ).drop(columns="_starter_first")
+        ).drop(columns=["_starter_first", "_sort_minutes"], errors="ignore")
         def highlight_starters(row):
             shade = "background-color: #fff1b8; color: #262626;" if row["Starter"] == "★" else ""
             return [shade] * len(row)
