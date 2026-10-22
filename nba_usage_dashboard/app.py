@@ -14,6 +14,12 @@ CDN = "https://cdn.espn.com/core/nba/boxscore"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36", "Accept": "application/json"}
 
 
+def current_nba_season_year(today=None):
+    """ESPN identifies an NBA season by its ending calendar year."""
+    today = today or date.today()
+    return today.year + 1 if today.month >= 10 else today.year
+
+
 def get_json(url, params):
     response = requests.get(url, params=params, headers=HEADERS, timeout=18)
     response.raise_for_status()
@@ -404,7 +410,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
                     label = escape(str(value))
                 # ESPN's player ID is authoritative; no name-based guessing.
                 if str(player_id).isdigit():
-                    url = f"https://www.espn.com/nba/player/stats/_/id/{player_id}"
+                    url = f"https://www.espn.com/nba/player/gamelog/_/id/{player_id}/type/nba/year/{current_nba_season_year()}"
                     return f'<a class="nba-player-link" href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a>'
                 return label
             if value == "":
