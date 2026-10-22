@@ -312,7 +312,7 @@ def show_game_score(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 4.1 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 4.2 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -397,12 +397,18 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
                 return f"{float(value):.1f}%"
             return escape(str(value))
 
-        headers = "".join(f"<th>{escape(str(c))}</th>" for c in df.columns)
+        # Group related stats with subtle vertical dividers after selected columns.
+        # Apply the same class to headers and body cells, regardless of column order.
+        divider_after = {"MIN", "PTS", "FG%", "3PA", "FTA", "REB", "AST", "BLK", "PF"}
+        headers = "".join(
+            f'<th class="{"nba-group-end" if c in divider_after else ""}">{escape(str(c))}</th>'
+            for c in df.columns
+        )
         body_rows = []
         for _, player_row in df.iterrows():
             css_class = ' class="nba-starter"' if player_row["Starter"] == "★" else ""
             cells = "".join(
-                f'<td class="{"nba-player" if col == "Player" else ""}">{display_cell(col, player_row[col])}</td>'
+                f'<td class="{" ".join(x for x in ("nba-player" if col == "Player" else "", "nba-group-end" if col in divider_after else "") if x)}">{display_cell(col, player_row[col])}</td>'
                 for col in df.columns
             )
             body_rows.append(f"<tr{css_class}>{cells}</tr>")
@@ -417,6 +423,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
           .nba-box .nba-starter td {{ background: #fff1b8; color: #262626; }}
           .nba-box .nba-role {{ font-size: 0.78em; opacity: 0.75; font-weight: 400; }}
           .nba-box .nba-player {{ font-weight: 550; }}
+          /* Slightly stronger than row rules, without crowding the compact box score. */
+          .nba-box th.nba-group-end, .nba-box td.nba-group-end {{ border-right: 2px solid #aeb8c4; }}
         </style>
         <div class="nba-scroll"><table class="nba-box"><thead><tr>{headers}</tr></thead>
         <tbody>{''.join(body_rows)}</tbody></table></div>
