@@ -1,5 +1,5 @@
 """Free ESPN NBA box scores with estimated usage rate. No API key needed."""
-from datetime import date
+from datetime import date, timedelta
 import re
 from html import escape
 
@@ -252,9 +252,68 @@ def game_label(event):
     return f"{name(away)} @ {name(home)} — {status.get('shortDetail') or status.get('description') or 'Unknown'}"
 
 
+def show_game_score(event):
+    """Render final/current score and period breakdown from ESPN scoreboard."""
+    competition = (event.get("competitions") or [{}])[0]
+    competitors = competition.get("competitors") or []
+    away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+    home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+    if not away or not home:
+        st.info("Score information is unavailable for this game.")
+        return
+
+    def team_name(c):
+        t = c.get("team") or {}
+        return t.get("abbreviation") or t.get("shortDisplayName") or t.get("displayName") or "Team"
+
+    def periods(c):
+        values = {}
+        for index, item in enumerate(c.get("linescores") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            period = item.get("period") or index
+            try:
+                period = int(period)
+            except (ValueError, TypeError):
+                continue
+            val = item.get("displayValue", item.get("value"))
+            if val is not None and str(val).strip() != "":
+                try:
+                    values[period] = str(int(float(val)))
+                except (ValueError, TypeError):
+                    values[period] = str(val)
+        return values
+
+    status = (event.get("status") or {}).get("type") or {}
+    completed = status.get("completed") is True or status.get("name") == "STATUS_FINAL"
+    state = str(status.get("state") or "").lower()
+    label = "Final" if completed else (status.get("shortDetail") or status.get("description") or "Game status unavailable")
+    away_periods, home_periods = periods(away), periods(home)
+    highest = max([4] + list(away_periods) + list(home_periods))
+    period_labels = [f"Q{i}" for i in range(1, 5)] + [f"OT{i-4}" for i in range(5, highest + 1)]
+    columns = ["Team"] + period_labels + ["Total"]
+
+    def row(c, data):
+        score = c.get("score")
+        if isinstance(score, dict):
+            score = score.get("displayValue", score.get("value"))
+        if score is None or str(score).strip() == "":
+            score = "—"
+        return [team_name(c)] + [data.get(i, "—") for i in range(1, highest + 1)] + [str(score)]
+
+    st.markdown(f"**{'Final score' if completed else 'Game score'} · {escape(str(label))}**")
+    score_df = pd.DataFrame([row(away, away_periods), row(home, home_periods)], columns=columns)
+    # Static table: the period order and team order must remain fixed.
+    st.table(score_df.set_index("Team"))
+    if not away_periods and not home_periods:
+        st.caption("ESPN has not supplied a quarter-by-quarter breakdown for this game.")
+    elif not completed and state == "pre":
+        st.caption("This game has not started; scores will appear when ESPN publishes them.")
+
+
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 3.8 · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
-selected_date = st.date_input("Select game date", value=date(2026, 10, 20), min_value=date(2000, 1, 1))
+st.caption("Version 4.1 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
         events = games_on(selected_date)
@@ -271,6 +330,10 @@ choices = {str(e.get("id")): game_label(e) for e in events if e.get("id")}
 selected_id = st.selectbox("Choose a game", options=list(choices), format_func=lambda k: choices[k])
 if not selected_id:
     st.stop()
+
+selected_event = next((e for e in events if str(e.get("id")) == selected_id), None)
+if selected_event:
+    show_game_score(selected_event)
 
 try:
     with st.spinner("Loading player box scores..."):
