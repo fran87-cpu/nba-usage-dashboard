@@ -2,6 +2,7 @@
 from datetime import date, timedelta
 import re
 from html import escape
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -197,6 +198,7 @@ def athlete_rows(group, roster=None):
             rows.append({
                 "Starter": "★" if is_starter else "",
                 "Player": player_name,
+                "_espn_player_id": str(athlete.get("id") or ""),
                 "MIN": minutes_display(raw_minutes), "_minutes_numeric": min_value, "PTS": int(number(pick("PTS", "points"))),
                 "FGM": fgm, "FGA": fga, "3PM": tpm, "3PA": tpa,
                 "FTM": ftm, "FTA": fta,
@@ -242,7 +244,7 @@ def team_table(group, roster=None):
     # fields in that player's row, while retaining their name and position.
     # Apply this AFTER usage calculations so team totals remain numeric.
     dnp = df["_minutes_numeric"].eq(0)
-    stat_columns = [c for c in df.columns if c not in ("Starter", "Player", "MIN", "_minutes_numeric")]
+    stat_columns = [c for c in df.columns if c not in ("Starter", "Player", "MIN", "_minutes_numeric", "_espn_player_id")]
     df.loc[dnp, "MIN"] = "DNP"
     df.loc[dnp, stat_columns] = ""
     return df.drop(columns="_minutes_numeric")
@@ -393,32 +395,42 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         # Streamlit's dataframe grid cannot apply a smaller font to only part of a
         # cell. Render a safe, scrollable HTML table so the ESPN position can be
         # visually secondary while retaining starter highlighting and Sort by.
-        def display_cell(column, value):
+        def display_cell(column, value, player_id=""):
+            if column == "Player":
+                name, sep, role = str(value).rpartition(" (")
+                if sep and role.endswith(")") and re.fullmatch(r"[A-Za-z]{1,4}", role[:-1]):
+                    label = f'{escape(name)} <span class="nba-role">({escape(role[:-1])})</span>'
+                else:
+                    label = escape(str(value))
+                # ESPN's player ID is authoritative; no name-based guessing.
+                if str(player_id).isdigit():
+                    url = f"https://www.espn.com/nba/player/stats/_/id/{player_id}"
+                    return f'<a class="nba-player-link" href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a>'
+                return label
             if value == "":
                 return ""
             if pd.isna(value):
                 return "—"
-            if column == "Player":
-                name, sep, role = str(value).rpartition(" (")
-                if sep and role.endswith(")") and re.fullmatch(r"[A-Za-z]{1,4}", role[:-1]):
-                    return f'{escape(name)} <span class="nba-role">({escape(role[:-1])})</span>'
             if column in ("FG%", "USG% (Est.)"):
                 return f"{float(value):.1f}%"
             return escape(str(value))
+
+        # Internal ESPN athlete ID is used only for player links, not shown as a column.
+        display_columns = [c for c in df.columns if c != "_espn_player_id"]
 
         # Group related stats with subtle vertical dividers after selected columns.
         # Apply the same class to headers and body cells, regardless of column order.
         divider_after = {"MIN", "PTS", "FG%", "3PA", "FTA", "REB", "AST", "BLK", "PF"}
         headers = "".join(
             f'<th class="{"nba-group-end" if c in divider_after else ""}">{escape(str(c))}</th>'
-            for c in df.columns
+            for c in display_columns
         )
         body_rows = []
         for _, player_row in df.iterrows():
             css_class = ' class="nba-starter"' if player_row["Starter"] == "★" else ""
             cells = "".join(
-                f'<td class="{" ".join(x for x in ("nba-player" if col == "Player" else "", "nba-group-end" if col in divider_after else "") if x)}">{display_cell(col, player_row[col])}</td>'
-                for col in df.columns
+                f'<td class="{" ".join(x for x in ("nba-player" if col == "Player" else "", "nba-group-end" if col in divider_after else "") if x)}">{display_cell(col, player_row[col], player_row.get("_espn_player_id", ""))}</td>'
+                for col in display_columns
             )
             body_rows.append(f"<tr{css_class}>{cells}</tr>")
         table_html = f"""
@@ -432,6 +444,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
           .nba-box .nba-starter td {{ background: #fff1b8; color: #262626; }}
           .nba-box .nba-role {{ font-size: 0.78em; opacity: 0.75; font-weight: 400; }}
           .nba-box .nba-player {{ font-weight: 550; }}
+          .nba-box a.nba-player-link {{ color: inherit; text-decoration: none; cursor: pointer; }}
+          .nba-box a.nba-player-link:hover {{ color: #1768bd; text-decoration: underline; }}
           /* Slightly stronger than row rules, without crowding the compact box score. */
           .nba-box th.nba-group-end, .nba-box td.nba-group-end {{ border-right: 2px solid #aeb8c4; }}
         </style>
@@ -439,9 +453,10 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         <tbody>{''.join(body_rows)}</tbody></table></div>
         """
         st.html(table_html)
-        st.download_button("Download CSV", data=df.to_csv(index=False).encode("utf-8"),
+        st.download_button("Download CSV", data=df.drop(columns=["_espn_player_id"], errors="ignore").to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
+st.caption("Click a player's name to open their ESPN statistics page in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
