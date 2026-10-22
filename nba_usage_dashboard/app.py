@@ -238,6 +238,13 @@ def team_table(group, roster=None):
         df["USG% (Est.)"] = usage.round(1)
     else:
         df["USG% (Est.)"] = float("nan")
+    # A player with no recorded playing time is DNP. Hide all numeric/stat
+    # fields in that player's row, while retaining their name and position.
+    # Apply this AFTER usage calculations so team totals remain numeric.
+    dnp = df["_minutes_numeric"].eq(0)
+    stat_columns = [c for c in df.columns if c not in ("Starter", "Player", "MIN", "_minutes_numeric")]
+    df.loc[dnp, "MIN"] = "DNP"
+    df.loc[dnp, stat_columns] = ""
     return df.drop(columns="_minutes_numeric")
 
 
@@ -312,7 +319,7 @@ def show_game_score(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 4.2 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 4.3 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -374,7 +381,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         # Keep the human-readable MIN column untouched in the display and CSV.
         if sort == "MIN":
             df["_sort_minutes"] = df["MIN"].map(
-                lambda v: minutes(v) if v != "—" else float("nan")
+                lambda v: float("nan") if v in ("—", "DNP") else minutes(v)
             )
         sort_column = "_sort_minutes" if sort == "MIN" else sort
         df = df.sort_values(
@@ -387,6 +394,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         # cell. Render a safe, scrollable HTML table so the ESPN position can be
         # visually secondary while retaining starter highlighting and Sort by.
         def display_cell(column, value):
+            if value == "":
+                return ""
             if pd.isna(value):
                 return "—"
             if column == "Player":
