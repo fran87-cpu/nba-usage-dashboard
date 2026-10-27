@@ -439,7 +439,7 @@ def show_game_score(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 4.7 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 4.9 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -476,6 +476,21 @@ team_groups = box.get("players", [])
 if not team_groups:
     st.warning("No player statistics were published for this game yet.")
     st.stop()
+
+# Hover details use the same 21-day, non-preseason history as the Top 50.
+# Load once for both teams and cache the result; no requests occur on mouse hover.
+hover_ids = tuple(sorted({r["_espn_player_id"] for g in team_groups
+                          for r in athlete_rows(g)
+                          if r["_espn_player_id"] and r["_minutes_numeric"] > 0}))
+hover_teams = tuple(sorted({str((g.get("team") or {}).get("abbreviation", ""))
+                            for g in team_groups if (g.get("team") or {}).get("abbreviation")}))
+hover_history = {}
+if hover_ids and hover_teams:
+    try:
+        with st.spinner("Preparing fantasy hover details (first load may take a moment)..."):
+            hover_history = recent_fantasy_history(selected_date, hover_ids, hover_teams)
+    except Exception:
+        st.caption("Historical hover data is temporarily unavailable; current-game fantasy points remain visible.")
 
 tabs = st.tabs([(g.get("team") or {}).get("displayName", f"Team {i+1}") for i, g in enumerate(team_groups)])
 for i, (tab, group) in enumerate(zip(tabs, team_groups)):
@@ -517,7 +532,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         # Streamlit's dataframe grid cannot apply a smaller font to only part of a
         # cell. Render a safe, scrollable HTML table so the ESPN position can be
         # visually secondary while retaining starter highlighting and Sort by.
-        def display_cell(column, value, player_id=""):
+        def display_cell(column, value, player_id="", player_minutes=""):
             if column == "Player":
                 name, sep, role = str(value).rpartition(" (")
                 if sep and role.endswith(")") and re.fullmatch(r"[A-Za-z]{1,4}", role[:-1]):
@@ -534,7 +549,15 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
             if pd.isna(value):
                 return "—"
             if column == "FPTS":
-                return f"{float(value):.1f}"
+                score = float(value)
+                prior = hover_history.get(str(player_id), [])
+                last_five = f"{sum(prior) / len(prior):.1f} ({len(prior)} games)" if prior else "No eligible prior games"
+                played = minutes(player_minutes)
+                rate = f"{score * 36 / played:.1f}" if played > 0 else "N/A"
+                tooltip = f"FPTS L5: {last_five} | FPTS/36: {rate}"
+                return (f'<span class="nba-fpts-hover" title="{escape(tooltip, quote=True)}" '
+                        f'tabindex="0" aria-label="ESPN fantasy points {score:.1f}; {escape(tooltip, quote=True)}">'
+                        f'{score:.1f}</span>')
             if column in ("FG%", "USG% (Est.)"):
                 return f"{float(value):.1f}%"
             return escape(str(value))
@@ -553,7 +576,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         for _, player_row in df.iterrows():
             css_class = ' class="nba-starter"' if player_row["Starter"] == "★" else ""
             cells = "".join(
-                f'<td class="{" ".join(x for x in ("nba-player" if col == "Player" else "", "nba-group-end" if col in divider_after else "") if x)}">{display_cell(col, player_row[col], player_row.get("_espn_player_id", ""))}</td>'
+                f'<td class="{" ".join(x for x in ("nba-player" if col == "Player" else "", "nba-group-end" if col in divider_after else "") if x)}">{display_cell(col, player_row[col], player_row.get("_espn_player_id", ""), player_row.get("MIN", ""))}</td>'
                 for col in display_columns
             )
             body_rows.append(f"<tr{css_class}>{cells}</tr>")
@@ -570,6 +593,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
           .nba-box .nba-player {{ font-weight: 550; }}
           .nba-box a.nba-player-link {{ color: inherit; text-decoration: none; cursor: pointer; }}
           .nba-box a.nba-player-link:hover {{ color: #1768bd; text-decoration: underline; }}
+          .nba-box .nba-fpts-hover {{ cursor: help; border-bottom: 1px dotted #718096; }}
+          .nba-box .nba-fpts-hover:focus {{ outline: 2px solid #1768bd; outline-offset: 2px; }}
           /* Slightly stronger than row rules, without crowding the compact box score. */
           .nba-box th.nba-group-end, .nba-box td.nba-group-end {{ border-right: 2px solid #aeb8c4; }}
         </style>
@@ -619,6 +644,7 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expan
                        "If fewer than five, the average uses the available games. "
                        "Missing historical games or ESPN outages can affect the result.")
 
+st.caption("Hover over an FPTS value to see FPTS L5 and FPTS/36. FPTS L5 uses up to five prior non-preseason appearances within 21 days; the game being viewed is excluded. The first historical lookup may take longer. ")
 st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
 st.caption("**FPTS (ESPN default)** = PTS + REB + 2×AST + 4×STL + 4×BLK − 2×TOV + 3PM + 2×FGM − FGA + FTM − FTA. Custom fantasy leagues may use different scoring.")
