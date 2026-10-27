@@ -246,6 +246,19 @@ def team_table(group, roster=None):
         df["USG% (Est.)"] = usage.round(1)
     else:
         df["USG% (Est.)"] = float("nan")
+    # ESPN default NBA points-league scoring (not custom league scoring).
+    # Calculate from the same box-score stats used throughout this dashboard.
+    df["FPTS"] = (
+        df["PTS"] + df["REB"] + 2 * df["AST"]
+        + 4 * df["STL"] + 4 * df["BLK"] - 2 * df["TOV"]
+        + df["3PM"] + 2 * df["FGM"] - df["FGA"]
+        + df["FTM"] - df["FTA"]
+    ).astype(float).round(1)
+    # Position fantasy points immediately before estimated usage.
+    cols = list(df.columns)
+    cols.remove("FPTS")
+    cols.insert(cols.index("USG% (Est.)"), "FPTS")
+    df = df[cols]
     # A player with no recorded playing time is DNP. Hide all numeric/stat
     # fields in that player's row, while retaining their name and position.
     # Apply this AFTER usage calculations so team totals remain numeric.
@@ -327,7 +340,7 @@ def show_game_score(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 4.3 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 4.6 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -382,7 +395,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
             st.caption("★ = starting lineup · Starter rows are highlighted in light yellow and displayed first.")
         else:
             st.caption(f"★ = ESPN-confirmed starter. ESPN marked {starters_found} of 5 starters for this team; unmarked players are not inferred.")
-        sort = st.selectbox("Sort by", ["MIN", "PTS", "USG% (Est.)", "REB", "AST", "Player"], key=f"sort_{i}")
+        sort = st.selectbox("Sort by", ["FPTS", "MIN", "PTS", "USG% (Est.)", "REB", "AST", "Player"], key=f"sort_{i}")
         # Keep ESPN-confirmed starters at the top on initial load and when changing sort options.
         df = df.assign(_starter_first=df["Starter"].eq("★"))
         # MM:SS sorts lexicographically for varying minute widths; convert to seconds.
@@ -391,13 +404,17 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
             df["_sort_minutes"] = df["MIN"].map(
                 lambda v: float("nan") if v in ("—", "DNP") else minutes(v)
             )
-        sort_column = "_sort_minutes" if sort == "MIN" else sort
+        # DNP cells are blank strings: convert numeric sorts safely to avoid
+        # comparing strings with floats when sorting a team with DNP players.
+        if sort not in ("MIN", "Player"):
+            df["_sort_numeric"] = pd.to_numeric(df[sort], errors="coerce")
+        sort_column = "_sort_minutes" if sort == "MIN" else ("Player" if sort == "Player" else "_sort_numeric")
         df = df.sort_values(
             ["_starter_first", sort_column],
             ascending=[False, sort == "Player"],
             na_position="last",
             kind="stable",
-        ).drop(columns=["_starter_first", "_sort_minutes"], errors="ignore")
+        ).drop(columns=["_starter_first", "_sort_minutes", "_sort_numeric"], errors="ignore")
         # Streamlit's dataframe grid cannot apply a smaller font to only part of a
         # cell. Render a safe, scrollable HTML table so the ESPN position can be
         # visually secondary while retaining starter highlighting and Sort by.
@@ -417,6 +434,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
                 return ""
             if pd.isna(value):
                 return "—"
+            if column == "FPTS":
+                return f"{float(value):.1f}"
             if column in ("FG%", "USG% (Est.)"):
                 return f"{float(value):.1f}%"
             return escape(str(value))
@@ -462,8 +481,9 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         st.download_button("Download CSV", data=df.drop(columns=["_espn_player_id"], errors="ignore").to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
-st.caption("Click a player's name to open their ESPN statistics page in a new tab. Players without an ESPN ID remain unlinked.")
+st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
+st.caption("**FPTS (ESPN default)** = PTS + REB + 2×AST + 4×STL + 4×BLK − 2×TOV + 3PM + 2×FGM − FGA + FTM − FTA. Custom fantasy leagues may use different scoring.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
