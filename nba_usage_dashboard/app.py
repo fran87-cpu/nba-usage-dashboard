@@ -1,5 +1,6 @@
 """Free ESPN NBA box scores with estimated usage rate. No API key needed."""
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 from html import escape
 from urllib.parse import quote
@@ -269,6 +270,92 @@ def team_table(group, roster=None):
     return df.drop(columns="_minutes_numeric")
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def daily_top_50(day):
+    """All completed/available box scores for the selected NBA calendar day."""
+    events = games_on(day)
+    ids = [str(e["id"]) for e in events if e.get("id")]
+    results, errors = [], []
+    def load(event_id):
+        box, _ = boxscore(event_id)
+        rows = []
+        for group in box.get("players", []):
+            team = (group.get("team") or {}).get("abbreviation", "")
+            for r in athlete_rows(group):
+                if r["_minutes_numeric"] > 0 and r["_espn_player_id"]:
+                    r["Team"] = team
+                    r["Game ID"] = event_id
+                    r["FPTS"] = fantasy_points(r)
+                    r["FPTS/36"] = round(r["FPTS"] * 36 / r["_minutes_numeric"], 1)
+                    rows.append(r)
+        return rows
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {pool.submit(load, eid): eid for eid in ids}
+        for future in as_completed(futures):
+            try:
+                results.extend(future.result())
+            except (requests.RequestException, ValueError, RuntimeError, KeyError, TypeError) as exc:
+                errors.append(f"{futures[future]}: {exc}")
+    results.sort(key=lambda r: r["FPTS"], reverse=True)
+    return results[:50], errors, len(ids)
+
+
+def fantasy_points(r):
+    return float(r["PTS"] + r["REB"] + 2*r["AST"] + 4*r["STL"] + 4*r["BLK"]
+                 - 2*r["TOV"] + r["3PM"] + 2*r["FGM"] - r["FGA"]
+                 + r["FTM"] - r["FTA"])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def recent_fantasy_history(day, player_ids, team_abbreviations):
+    """Look back 21 calendar days, excluding selected day, for up to 5 prior appearances.
+
+    Fetch scoreboard indexes then only relevant games; cache both underlying requests.
+    """
+    wanted = set(player_ids)
+    teams = set(team_abbreviations)
+    history = {pid: [] for pid in wanted}
+    days = [day - timedelta(days=i) for i in range(1, 22)]
+    def get_day(d):
+        try:
+            return d, games_on(d)
+        except (requests.RequestException, ValueError):
+            return d, []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        days_events = list(pool.map(get_day, days))
+    # Check the newest events first. Limit to games involving today's top-50 teams.
+    # ESPN athlete IDs are the join key, not names.
+    event_ids = []
+    seen = set()
+    for d, events in sorted(days_events, reverse=True):
+        for event in events:
+            eid = str(event.get("id") or "")
+            competitors = ((event.get("competitions") or [{}])[0].get("competitors") or [])
+            participating = {str((c.get("team") or {}).get("abbreviation", "")) for c in competitors}
+            if eid and eid not in seen and participating.intersection(teams):
+                seen.add(eid)
+                event_ids.append((d, eid))
+    def get_event(item):
+        d, eid = item
+        try:
+            box, _ = boxscore(eid)
+            rows = []
+            for group in box.get("players", []):
+                for r in athlete_rows(group):
+                    pid = r["_espn_player_id"]
+                    if pid in wanted and r["_minutes_numeric"] > 0:
+                        rows.append((pid, d, fantasy_points(r)))
+            return rows
+        except (requests.RequestException, ValueError, RuntimeError, KeyError, TypeError):
+            return []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for rows in pool.map(get_event, event_ids):
+            for pid, d, fpts in rows:
+                history[pid].append((d, fpts))
+    return {pid: [score for _, score in sorted(games, reverse=True)[:5]]
+            for pid, games in history.items()}
+
+
 def game_label(event):
     competition = (event.get("competitions") or [{}])[0]
     teams = competition.get("competitors") or []
@@ -340,7 +427,7 @@ def show_game_score(event):
 
 
 st.title("🏀 NBA Box Score + Player Usage")
-st.caption("Version 4.6 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
+st.caption("Version 4.7 (based on 3.8) · Free ESPN data · ESPN player positions · Starters first · MM:SS minutes · Estimated USG% · No API key required")
 selected_date = st.date_input("Select game date", value=date.today() - timedelta(days=1), min_value=date(2000, 1, 1))
 try:
     with st.spinner("Loading games from ESPN..."):
@@ -480,6 +567,45 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
         st.html(table_html)
         st.download_button("Download CSV", data=df.drop(columns=["_espn_player_id"], errors="ignore").to_csv(index=False).encode("utf-8"),
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
+
+st.divider()
+with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expanded=False):
+    st.caption("Ranks all players with recorded minutes across games on the selected date. "
+               "FPTS L5 averages up to five *previous* appearances (excluding the selected day). "
+               "FPTS/36 is the selected game's rate, not a projection.")
+    # Keep the expensive league-wide requests behind a button inside the expander.
+    if st.button("Load top 50 for selected date", key="load_daily_top50"):
+        st.session_state["daily_top50_date"] = selected_date
+    if st.session_state.get("daily_top50_date") == selected_date:
+        with st.spinner("Collecting the day's NBA box scores..."):
+            leaders, failed, game_count = daily_top_50(selected_date)
+        if failed:
+            st.warning(f"ESPN data was unavailable for {len(failed)} of {game_count} games. Rankings may be incomplete.")
+        if not leaders:
+            st.info("No player box scores available for this date.")
+        else:
+            with st.spinner("Calculating last-five-game averages from prior box scores (first load may take a while)..."):
+                ids = tuple(sorted({r["_espn_player_id"] for r in leaders}))
+                history = recent_fantasy_history(selected_date, ids, tuple(sorted({r["Team"] for r in leaders})))
+            display = []
+            for rank, r in enumerate(leaders, 1):
+                past = history.get(r["_espn_player_id"], [])
+                display.append({
+                    "Rank": rank, "Player": r["Player"], "Team": r["Team"],
+                    "MIN": r["MIN"], "FPTS": r["FPTS"],
+                    "FPTS L5": round(sum(past)/len(past), 1) if past else None,
+                    "L5 GP": len(past), "FPTS/36": r["FPTS/36"],
+                })
+            leaders_df = pd.DataFrame(display)
+            st.dataframe(leaders_df, hide_index=True, use_container_width=True,
+                         column_config={"FPTS": st.column_config.NumberColumn(format="%.1f"),
+                                        "FPTS L5": st.column_config.NumberColumn(format="%.1f"),
+                                        "FPTS/36": st.column_config.NumberColumn(format="%.1f")})
+            st.download_button("Download top 50 CSV", leaders_df.to_csv(index=False).encode("utf-8"),
+                               file_name=f"nba_top50_fpts_{selected_date:%Y%m%d}.csv", mime="text/csv")
+            st.caption("L5 GP shows how many prior appearances were found in the 21-day lookback. "
+                       "If fewer than five, the average uses the available games. "
+                       "Missing historical games or ESPN outages can affect the result.")
 
 st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
