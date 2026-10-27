@@ -306,9 +306,21 @@ def fantasy_points(r):
                  + r["FTM"] - r["FTA"])
 
 
+def is_non_preseason_event(event):
+    """Exclude ESPN preseason (season.type=1) from historical fantasy averages.
+
+    Keep unknown classifications rather than incorrectly dropping regular-season games.
+    """
+    season = event.get("season") or {}
+    season_type = season.get("type") if isinstance(season, dict) else None
+    if isinstance(season_type, dict):
+        season_type = season_type.get("id") or season_type.get("type")
+    return str(season_type).strip().lower() not in {"1", "preseason", "pre-season"}
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def recent_fantasy_history(day, player_ids, team_abbreviations):
-    """Look back 21 calendar days, excluding selected day, for up to 5 prior appearances.
+    """Look back 21 calendar days for up to 5 prior non-preseason appearances.
 
     Fetch scoreboard indexes then only relevant games; cache both underlying requests.
     """
@@ -332,7 +344,7 @@ def recent_fantasy_history(day, player_ids, team_abbreviations):
             eid = str(event.get("id") or "")
             competitors = ((event.get("competitions") or [{}])[0].get("competitors") or [])
             participating = {str((c.get("team") or {}).get("abbreviation", "")) for c in competitors}
-            if eid and eid not in seen and participating.intersection(teams):
+            if eid and eid not in seen and participating.intersection(teams) and is_non_preseason_event(event):
                 seen.add(eid)
                 event_ids.append((d, eid))
     def get_event(item):
@@ -571,7 +583,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
 st.divider()
 with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expanded=False):
     st.caption("Ranks all players with recorded minutes across games on the selected date. "
-               "FPTS L5 averages up to five *previous* appearances (excluding the selected day). "
+               "FPTS L5 averages up to five *previous* non-preseason appearances (excluding the selected day). "
                "FPTS/36 is the selected game's rate, not a projection.")
     # Keep the expensive league-wide requests behind a button inside the expander.
     if st.button("Load top 50 for selected date", key="load_daily_top50"):
@@ -603,7 +615,7 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expan
                                         "FPTS/36": st.column_config.NumberColumn(format="%.1f")})
             st.download_button("Download top 50 CSV", leaders_df.to_csv(index=False).encode("utf-8"),
                                file_name=f"nba_top50_fpts_{selected_date:%Y%m%d}.csv", mime="text/csv")
-            st.caption("L5 GP shows how many prior appearances were found in the 21-day lookback. "
+            st.caption("L5 GP shows how many prior non-preseason appearances were found in the 21-day lookback. "
                        "If fewer than five, the average uses the available games. "
                        "Missing historical games or ESPN outages can affect the result.")
 
