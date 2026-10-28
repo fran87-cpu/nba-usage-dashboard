@@ -247,14 +247,9 @@ def team_table(group, roster=None):
         df["USG% (Est.)"] = usage.round(1)
     else:
         df["USG% (Est.)"] = float("nan")
-    # ESPN default NBA points-league scoring (not custom league scoring).
-    # Calculate from the same box-score stats used throughout this dashboard.
-    df["FPTS"] = (
-        df["PTS"] + df["REB"] + 2 * df["AST"]
-        + 4 * df["STL"] + 4 * df["BLK"] - 2 * df["TOV"]
-        + df["3PM"] + 2 * df["FGM"] - df["FGA"]
-        + df["FTM"] - df["FTA"]
-    ).astype(float).round(1)
+    # Custom fantasy scoring supplied by the user; applied consistently
+    # to box scores, daily rankings, and previous-game averages.
+    df["FPTS"] = df.apply(fantasy_points, axis=1).round(1)
     # Position fantasy points immediately before estimated usage.
     cols = list(df.columns)
     cols.remove("FPTS")
@@ -301,8 +296,12 @@ def daily_top_50(day):
 
 
 def fantasy_points(r):
-    return float(r["PTS"] + r["REB"] + 2*r["AST"] + 4*r["STL"] + 4*r["BLK"]
-                 - 2*r["TOV"] + r["3PM"] + 2*r["FGM"] - r["FGA"]
+    """Custom fantasy score: PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK
+    - 2 TOV - 2 PF + 3PM + FGM - FGA + FTM - FTA.
+    """
+    return float(r["PTS"] + 1.2*r["REB"] + 1.5*r["AST"]
+                 + 3*r["STL"] + 3*r["BLK"] - 2*r["TOV"] - 2*r["PF"]
+                 + r["3PM"] + r["FGM"] - r["FGA"]
                  + r["FTM"] - r["FTA"])
 
 
@@ -556,7 +555,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
                 rate = f"{score * 36 / played:.1f}" if played > 0 else "N/A"
                 tooltip = f"FPTS L5: {last_five} | FPTS/36: {rate}"
                 return (f'<span class="nba-fpts-hover" title="{escape(tooltip, quote=True)}" '
-                        f'tabindex="0" aria-label="ESPN fantasy points {score:.1f}; {escape(tooltip, quote=True)}">'
+                        f'tabindex="0" aria-label="custom fantasy points {score:.1f}; {escape(tooltip, quote=True)}">'
                         f'{score:.1f}</span>')
             if column in ("FG%", "USG% (Est.)"):
                 return f"{float(value):.1f}%"
@@ -606,7 +605,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
                            file_name=f"espn_{selected_id}_team{i+1}.csv", mime="text/csv", key=f"download_{i}")
 
 st.divider()
-with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expanded=False):
+with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", expanded=False):
     st.caption("Ranks all players with recorded minutes across games on the selected date. "
                "FPTS L5 averages up to five *previous* non-preseason appearances (excluding the selected day). "
                "FPTS/36 is the selected game's rate, not a projection.")
@@ -647,7 +646,7 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · ESPN FPTS", expan
 st.caption("Hover over an FPTS value to see FPTS L5 and FPTS/36. FPTS L5 uses up to five prior non-preseason appearances within 21 days; the game being viewed is excluded. The first historical lookup may take longer. ")
 st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
-st.caption("**FPTS (ESPN default)** = PTS + REB + 2×AST + 4×STL + 4×BLK − 2×TOV + 3PM + 2×FGM − FGA + FTM − FTA. Custom fantasy leagues may use different scoring.")
+st.caption("**FPTS (custom)** = PTS + 1.2×REB + 1.5×AST + 3×STL + 3×BLK − 2×TOV − 2×PF + 3PM + FGM − FGA + FTM − FTA.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
