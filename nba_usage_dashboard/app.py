@@ -627,17 +627,48 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", exp
                     "Rank": rank, "Player": r["Player"], "Team": r["Team"],
                     "MIN": r["MIN"], "FPTS": r["FPTS"],
                     "FPTS L3": round(sum(past)/len(past), 1) if past else None,
-                    "L3 GP": len(past),
                 })
             leaders_df = pd.DataFrame(display)
-            st.dataframe(leaders_df, hide_index=True, use_container_width=True,
-                         column_config={"FPTS": st.column_config.NumberColumn(format="%.1f"),
-                                        "FPTS L3": st.column_config.NumberColumn(format="%.1f")})
+            # Render the leaderboard as HTML, just like the box score, so the
+            # visible player name itself opens ESPN's current-season Game Log.
+            # Athlete IDs are sourced from ESPN, never inferred from names.
+            leaderboard_rows = []
+            for row, leader in zip(display, leaders):
+                player_id = str(leader.get("_espn_player_id", ""))
+                player_name = escape(str(row["Player"]))
+                if player_id.isdigit():
+                    game_log_url = (f"https://www.espn.com/nba/player/gamelog/_/id/"
+                                    f"{player_id}/type/nba/year/{current_nba_season_year()}")
+                    player_name = (f'<a href="{escape(game_log_url, quote=True)}" '
+                                   f'target="_blank" rel="noopener noreferrer">{player_name}</a>')
+                l3 = "—" if row["FPTS L3"] is None else f'{row["FPTS L3"]:.1f}'
+                leaderboard_rows.append(
+                    f'<tr><td>{row["Rank"]}</td><td>{player_name}</td>'
+                    f'<td>{escape(str(row["Team"]))}</td>'
+                    f'<td>{escape(str(row["MIN"]))}</td>'
+                    f'<td>{row["FPTS"]:.1f}</td><td>{l3}</td></tr>'
+                )
+            leaderboard_html = """
+            <style>
+              .fantasy-leaders-scroll { overflow-x: auto; max-width: 100%; }
+              .fantasy-leaders { border-collapse: collapse; width: 100%; white-space: nowrap; font-size: .9rem; }
+              .fantasy-leaders th, .fantasy-leaders td { padding: 8px 12px; border-bottom: 1px solid #ddd; text-align: right; }
+              .fantasy-leaders th { background: #f1f3f5; color: #252525; font-weight: 650; }
+              .fantasy-leaders th:nth-child(2), .fantasy-leaders td:nth-child(2) { text-align: left; }
+              .fantasy-leaders td:nth-child(2) { font-weight: 550; }
+              .fantasy-leaders a { color: inherit; text-decoration: none; cursor: pointer; }
+              .fantasy-leaders a:hover { color: #1768bd; text-decoration: underline; }
+            </style>
+            <div class="fantasy-leaders-scroll"><table class="fantasy-leaders">
+            <thead><tr><th>Rank</th><th>Player</th><th>Team</th><th>MIN</th><th>FPTS</th><th>FPTS L3</th></tr></thead>
+            <tbody>""" + "".join(leaderboard_rows) + """</tbody></table></div>"""
+            st.html(leaderboard_html)
             st.download_button("Download top 50 CSV", leaders_df.to_csv(index=False).encode("utf-8"),
                                file_name=f"nba_top50_fpts_{selected_date:%Y%m%d}.csv", mime="text/csv")
-            st.caption("L3 GP shows how many prior non-preseason appearances were found in the 21-day lookback. "
-                       "If fewer than three, the average uses the available games. "
-                       "Missing historical games or ESPN outages can affect the result.")
+            st.caption("FPTS L3 uses up to three previous eligible appearances in the 21-day lookback. "
+                       "If fewer than three exist, the average uses the available games. "
+                       "Missing historical games or ESPN outages can affect the result. "
+                       "Click a player name to open their ESPN Game Log in a new tab.")
 
 st.caption("Hover over an FPTS value to see FPTS L3. FPTS L3 uses up to three prior non-preseason appearances within 21 days; the game being viewed is excluded. The first historical lookup may take longer. ")
 st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
