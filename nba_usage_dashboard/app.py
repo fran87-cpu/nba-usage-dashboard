@@ -281,7 +281,6 @@ def daily_top_50(day):
                     r["Team"] = team
                     r["Game ID"] = event_id
                     r["FPTS"] = fantasy_points(r)
-                    r["FPTS/36"] = round(r["FPTS"] * 36 / r["_minutes_numeric"], 1)
                     rows.append(r)
         return rows
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -297,12 +296,13 @@ def daily_top_50(day):
 
 def fantasy_points(r):
     """Custom fantasy score: PTS + 1.2 REB + 1.5 AST + 3 STL + 3 BLK
-    - 2 TOV - 2 PF + 3PM + FGM - FGA + FTM - FTA.
+    - 2.5 TOV - 1.5 PF + 3PM + FGM - FGMI + FTM - FTMI.
+    FGMI = FGA - FGM; FTMI = FTA - FTM.
     """
     return float(r["PTS"] + 1.2*r["REB"] + 1.5*r["AST"]
-                 + 3*r["STL"] + 3*r["BLK"] - 2*r["TOV"] - 2*r["PF"]
-                 + r["3PM"] + r["FGM"] - r["FGA"]
-                 + r["FTM"] - r["FTA"])
+                 + 3*r["STL"] + 3*r["BLK"] - 2.5*r["TOV"] - 1.5*r["PF"]
+                 + r["3PM"] + r["FGM"] - (r["FGA"] - r["FGM"])
+                 + r["FTM"] - (r["FTA"] - r["FTM"]))
 
 
 def is_non_preseason_event(event):
@@ -319,7 +319,7 @@ def is_non_preseason_event(event):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def recent_fantasy_history(day, player_ids, team_abbreviations):
-    """Look back 21 calendar days for up to 5 prior non-preseason appearances.
+    """Look back 21 calendar days for up to 3 prior non-preseason appearances.
 
     Fetch scoreboard indexes then only relevant games; cache both underlying requests.
     """
@@ -363,7 +363,7 @@ def recent_fantasy_history(day, player_ids, team_abbreviations):
         for rows in pool.map(get_event, event_ids):
             for pid, d, fpts in rows:
                 history[pid].append((d, fpts))
-    return {pid: [score for _, score in sorted(games, reverse=True)[:5]]
+    return {pid: [score for _, score in sorted(games, reverse=True)[:3]]
             for pid, games in history.items()}
 
 
@@ -550,10 +550,8 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
             if column == "FPTS":
                 score = float(value)
                 prior = hover_history.get(str(player_id), [])
-                last_five = f"{sum(prior) / len(prior):.1f} ({len(prior)} games)" if prior else "No eligible prior games"
-                played = minutes(player_minutes)
-                rate = f"{score * 36 / played:.1f}" if played > 0 else "N/A"
-                tooltip = f"FPTS L5: {last_five} | FPTS/36: {rate}"
+                last_three = f"{sum(prior) / len(prior):.1f} ({len(prior)} games)" if prior else "No eligible prior games"
+                tooltip = f"FPTS L3: {last_three}"
                 return (f'<span class="nba-fpts-hover" title="{escape(tooltip, quote=True)}" '
                         f'tabindex="0" aria-label="custom fantasy points {score:.1f}; {escape(tooltip, quote=True)}">'
                         f'{score:.1f}</span>')
@@ -607,8 +605,7 @@ for i, (tab, group) in enumerate(zip(tabs, team_groups)):
 st.divider()
 with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", expanded=False):
     st.caption("Ranks all players with recorded minutes across games on the selected date. "
-               "FPTS L5 averages up to five *previous* non-preseason appearances (excluding the selected day). "
-               "FPTS/36 is the selected game's rate, not a projection.")
+               "FPTS L3 averages up to three *previous* non-preseason appearances (excluding the selected day).")
     # Keep the expensive league-wide requests behind a button inside the expander.
     if st.button("Load top 50 for selected date", key="load_daily_top50"):
         st.session_state["daily_top50_date"] = selected_date
@@ -620,7 +617,7 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", exp
         if not leaders:
             st.info("No player box scores available for this date.")
         else:
-            with st.spinner("Calculating last-five-game averages from prior box scores (first load may take a while)..."):
+            with st.spinner("Calculating last-three-game averages from prior box scores (first load may take a while)..."):
                 ids = tuple(sorted({r["_espn_player_id"] for r in leaders}))
                 history = recent_fantasy_history(selected_date, ids, tuple(sorted({r["Team"] for r in leaders})))
             display = []
@@ -629,24 +626,23 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", exp
                 display.append({
                     "Rank": rank, "Player": r["Player"], "Team": r["Team"],
                     "MIN": r["MIN"], "FPTS": r["FPTS"],
-                    "FPTS L5": round(sum(past)/len(past), 1) if past else None,
-                    "L5 GP": len(past), "FPTS/36": r["FPTS/36"],
+                    "FPTS L3": round(sum(past)/len(past), 1) if past else None,
+                    "L3 GP": len(past),
                 })
             leaders_df = pd.DataFrame(display)
             st.dataframe(leaders_df, hide_index=True, use_container_width=True,
                          column_config={"FPTS": st.column_config.NumberColumn(format="%.1f"),
-                                        "FPTS L5": st.column_config.NumberColumn(format="%.1f"),
-                                        "FPTS/36": st.column_config.NumberColumn(format="%.1f")})
+                                        "FPTS L3": st.column_config.NumberColumn(format="%.1f")})
             st.download_button("Download top 50 CSV", leaders_df.to_csv(index=False).encode("utf-8"),
                                file_name=f"nba_top50_fpts_{selected_date:%Y%m%d}.csv", mime="text/csv")
-            st.caption("L5 GP shows how many prior non-preseason appearances were found in the 21-day lookback. "
-                       "If fewer than five, the average uses the available games. "
+            st.caption("L3 GP shows how many prior non-preseason appearances were found in the 21-day lookback. "
+                       "If fewer than three, the average uses the available games. "
                        "Missing historical games or ESPN outages can affect the result.")
 
-st.caption("Hover over an FPTS value to see FPTS L5 and FPTS/36. FPTS L5 uses up to five prior non-preseason appearances within 21 days; the game being viewed is excluded. The first historical lookup may take longer. ")
+st.caption("Hover over an FPTS value to see FPTS L3. FPTS L3 uses up to three prior non-preseason appearances within 21 days; the game being viewed is excluded. The first historical lookup may take longer. ")
 st.caption("Click a player's name to open their ESPN Game Log in a new tab. Players without an ESPN ID remain unlinked.")
 st.caption("Positions use ESPN game data first, then ESPN’s season-specific team roster. ESPN may omit some detailed roles; these are left blank rather than guessed.")
-st.caption("**FPTS (custom)** = PTS + 1.2×REB + 1.5×AST + 3×STL + 3×BLK − 2×TOV − 2×PF + 3PM + FGM − FGA + FTM − FTA.")
+st.caption("**FPTS (custom)** = PTS + 1.2×REB + 1.5×AST + 3×STL + 3×BLK − 2.5×TOV − 1.5×PF + 3PM + FGM − FGMI + FTM − FTMI, where FGMI = FGA − FGM and FTMI = FTA − FTM.")
 st.caption("**FG%** = 100 × FGM / FGA. A blank percentage means the player attempted no field goals.")
 st.info("**USG% (Est.)** = 100 × (player FGA + 0.44 × FTA + TOV) × (team player-minutes / 5) ÷ [player minutes × (team FGA + 0.44 × FTA + TOV)]. This is an estimate, **not** official NBA on-court usage. Players with no minutes have no estimate. Team totals are computed from the player rows supplied by ESPN.")
 st.caption("ESPN endpoints are unofficial for third-party use and can change or restrict access. This project is not affiliated with ESPN or the NBA.")
