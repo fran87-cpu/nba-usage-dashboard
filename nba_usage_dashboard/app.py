@@ -628,6 +628,35 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", exp
                     "MIN": r["MIN"], "FPTS": r["FPTS"],
                     "FPTS L3": round(sum(past)/len(past), 1) if past else None,
                 })
+            # Sort the Top 50 without losing ESPN player IDs used by clickable links.
+            # Missing L3 values are always last; the default remains FPTS descending.
+            leaderboard_sort = st.selectbox(
+                "Sort Top 50 by", ["FPTS", "FPTS L3", "MIN", "Player", "Team"],
+                key="top50_sort_by",
+            )
+            paired = list(zip(display, leaders))
+            if leaderboard_sort == "FPTS L3":
+                paired.sort(key=lambda pair: (
+                    pair[0]["FPTS L3"] is None,
+                    -(pair[0]["FPTS L3"] or 0),
+                    -pair[0]["FPTS"],
+                ))
+            elif leaderboard_sort == "MIN":
+                paired.sort(key=lambda pair: (
+                    -(int(pair[0]["MIN"].split(":")[0]) * 60 +
+                      int(pair[0]["MIN"].split(":")[1]))
+                    if ":" in str(pair[0]["MIN"]) else 0,
+                    -pair[0]["FPTS"],
+                ))
+            elif leaderboard_sort in ("Player", "Team"):
+                paired.sort(key=lambda pair: (str(pair[0][leaderboard_sort]).casefold(), -pair[0]["FPTS"]))
+            else:
+                paired.sort(key=lambda pair: -pair[0]["FPTS"])
+            # Rank denotes position in the currently selected ordering.
+            for rank, (row, _) in enumerate(paired, 1):
+                row["Rank"] = rank
+            display = [row for row, _ in paired]
+            leaders = [leader for _, leader in paired]
             leaders_df = pd.DataFrame(display)
             # Render the leaderboard as HTML, just like the box score, so the
             # visible player name itself opens ESPN's current-season Game Log.
@@ -665,7 +694,8 @@ with st.expander("🏆 Top 50 Fantasy Performers of the Day · Custom FPTS", exp
             st.html(leaderboard_html)
             st.download_button("Download top 50 CSV", leaders_df.to_csv(index=False).encode("utf-8"),
                                file_name=f"nba_top50_fpts_{selected_date:%Y%m%d}.csv", mime="text/csv")
-            st.caption("FPTS L3 uses up to three previous eligible appearances in the 21-day lookback. "
+            st.caption("Choose a sorting metric above; the CSV follows the same order. "
+                       "FPTS L3 uses up to three previous eligible appearances in the 21-day lookback. "
                        "If fewer than three exist, the average uses the available games. "
                        "Missing historical games or ESPN outages can affect the result. "
                        "Click a player name to open their ESPN Game Log in a new tab.")
